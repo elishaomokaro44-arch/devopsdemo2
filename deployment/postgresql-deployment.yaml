@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgresql
+spec:
+  selector:
+    matchLabels:
+      app: postgresql
+  template:
+    metadata:
+      labels:
+        app: postgresql
+    spec:
+      containers:
+      - name: postgresql
+        image: postgres:latest
+        env:
+        - name: POSTGRES_DB
+          value: elishaomokaro
+        - name: POSTGRES_USER
+          value: elisha0147
+        - name: POSTGRES_PASSWORD
+          value: OMOKARO55555
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: postgresql-storage
+          mountPath: /var/lib/postgresql
+      volumes:
+      - name: postgresql-storage
+        persistentVolumeClaim:
+          claimName: postgresql-pvc
