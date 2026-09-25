@@ -18,16 +18,16 @@ port_number = int(os.environ.get("APP_PORT", 5153))
 def health_check():
     return "ok"
 
-
 @app.route("/readiness_check")
 def readiness_check():
     try:
-        count = db.session.query(Token).count()
+        # Run a simple raw SQL query to confirm DB connectivity
+        db.session.execute("SELECT 1 FROM tokens LIMIT 1;")
     except Exception as e:
         app.logger.error(e)
         return "failed", 500
     else:
-        return "ok"
+        return "ok", 200
 
 
 def get_daily_visits():
