@@ -1,131 +1,152 @@
-# Coworking Space Service Extension
-The Coworking Space Service is a set of APIs that enables users to request one-time tokens and administrators to authorize access to a coworking space. This service follows a microservice pattern and the APIs are split into distinct services that can be deployed and managed independently of one another.
+# Coworking Space Analytics Service
 
-For this project, you are a DevOps engineer who will be collaborating with a team that is building an API for business analysts. The API provides business analysts basic analytics data on user activity in the service. The application they provide you functions as expected locally and you are expected to help build a pipeline to deploy it in Kubernetes.
+The analytics service is a small Flask API that reports on user activity in the
+Coworking Space platform. It reads from a PostgreSQL database and exposes two
+reports for business analysts:
 
-## Getting Started
+| Endpoint | Returns |
+|---|---|
+| `GET /api/reports/daily_usage` | Number of check-ins per day |
+| `GET /api/reports/user_visits` | Number of visits per user, with join date |
+| `GET /health_check` | Liveness: the process is up |
+| `GET /readiness_check` | Readiness: the app can query the `tokens` table |
 
-### Dependencies
-#### Local Environment
-1. Python Environment - run Python 3.6+ applications and install Python dependencies via `pip`
-2. Docker CLI - build and run Docker images locally
-3. `kubectl` - run commands against a Kubernetes cluster
-4. `helm` - apply Helm Charts to a Kubernetes cluster
+This document explains how the service is built and deployed, and how to
+release a change.
 
-#### Remote Resources
-1. AWS CodeBuild - build Docker images remotely
-2. AWS ECR - host Docker images
-3. Kubernetes Environment with AWS EKS - run applications in k8s
-4. AWS CloudWatch - monitor activity and logs in EKS
-5. GitHub - pull and clone code
+## How the pieces fit together
 
-### Setup
-#### 1. Configure a Database
-Set up a Postgres database using a Helm Chart.
-
-1. Set up Bitnami Repo
-```bash
-helm repo add <REPO_NAME> https://charts.bitnami.com/bitnami
+```
+GitHub ──► AWS CodeBuild ──► Amazon ECR ──► Amazon EKS ──► CloudWatch
+(source)   (docker build)    (image store)  (runs the pods)  (logs/metrics)
 ```
 
-2. Install PostgreSQL Helm Chart
-```
-helm install <SERVICE_NAME> <REPO_NAME>/postgresql
-```
+- **GitHub** holds the application code (`analytics/`), the build definition
+  (`buildspec.yaml`), the database seed scripts (`db/`) and the Kubernetes
+  manifests (`deployment/`).
+- **AWS CodeBuild** builds the Docker image from `analytics/Dockerfile` and
+  pushes it to ECR. Each image is tagged with the CodeBuild build number
+  (`$CODEBUILD_BUILD_NUMBER`), so every build produces a new, immutable tag.
+- **Amazon ECR** stores the images in the `coworking-analytics` repository.
+- **Amazon EKS** runs two workloads in the `default` namespace: the analytics
+  API (`coworking`) and PostgreSQL (`postgresql`).
+- **CloudWatch Container Insights** collects container logs and metrics from
+  the cluster through the `amazon-cloudwatch-observability` EKS add-on.
 
-This should set up a Postgre deployment at `<SERVICE_NAME>-postgresql.default.svc.cluster.local` in your Kubernetes cluster. You can verify it by running `kubectl svc`
+## Repository layout
 
-By default, it will create a username `postgres`. The password can be retrieved with the following command:
-```bash
-export POSTGRES_PASSWORD=$(kubectl get secret --namespace default <SERVICE_NAME>-postgresql -o jsonpath="{.data.postgres-password}" | base64 -d)
+| Path | Purpose |
+|---|---|
+| `analytics/` | Flask application, `requirements.txt` and `Dockerfile` |
+| `buildspec.yaml` | CodeBuild pipeline: log in to ECR, build, tag, push |
+| `db/` | SQL scripts that create and seed the `users` and `tokens` tables |
+| `deployment/pv.yaml`, `pvc.yaml` | Storage for PostgreSQL |
+| `deployment/postgresql-deployment.yaml`, `postgresql-service.yaml` | PostgreSQL and its in-cluster service |
+| `deployment/db-configmap.yaml` | Non-secret database settings (`db-env`) |
+| `deployment/db-secret.yaml` | Database credentials (`db-secret`) |
+| `deployment/admin-api.yaml` | Analytics API deployment and LoadBalancer service |
 
-echo $POSTGRES_PASSWORD
-```
+## Configuration
 
-<sup><sub>* The instructions are adapted from [Bitnami's PostgreSQL Helm Chart](https://artifacthub.io/packages/helm/bitnami/postgresql).</sub></sup>
+The application is configured entirely through environment variables, so the
+same image runs unchanged in any environment.
 
-3. Test Database Connection
-The database is accessible within the cluster. This means that when you will have some issues connecting to it via your local environment. You can either connect to a pod that has access to the cluster _or_ connect remotely via [`Port Forwarding`](https://kubernetes.io/docs/tasks/access-application-cluster/port-forward-access-application-cluster/)
+| Variable | Source in Kubernetes | Default |
+|---|---|---|
+| `DB_HOST` | ConfigMap `db-env` | `127.0.0.1` |
+| `DB_PORT` | ConfigMap `db-env` | `5432` |
+| `DB_NAME` | ConfigMap `db-env` | `postgres` |
+| `DB_USERNAME` | Secret `db-secret` | required |
+| `DB_PASSWORD` | Secret `db-secret` | required |
+| `APP_PORT` | not set | `5153` |
 
-* Connecting Via Port Forwarding
-```bash
-kubectl port-forward --namespace default svc/<SERVICE_NAME>-postgresql 5432:5432 &
-    PGPASSWORD="$POSTGRES_PASSWORD" psql --host 127.0.0.1 -U postgres -d postgres -p 5432
-```
+`DB_HOST` points at `postgresql-service`, the ClusterIP service in front of the
+database, so the API reaches PostgreSQL by service name rather than by pod IP.
+The credentials in `db-secret` must match the user, password and database that
+PostgreSQL was initialised with; if they drift, the readiness probe fails and
+Kubernetes keeps the pod out of the service.
 
-* Connecting Via a Pod
-```bash
-kubectl exec -it <POD_NAME> bash
-PGPASSWORD="<PASSWORD HERE>" psql postgres://postgres@<SERVICE_NAME>:5432/postgres -c <COMMAND_HERE>
-```
+The CodeBuild project needs three environment variables: `AWS_ACCOUNT_ID`,
+`AWS_DEFAULT_REGION` and `ECR_REPOSITORY`. It must run in privileged mode (to
+run Docker) with a service role that is allowed to push to ECR.
 
-4. Run Seed Files
-We will need to run the seed files in `db/` in order to create the tables and populate them with data.
+## Deploying from scratch
 
-```bash
-kubectl port-forward --namespace default svc/<SERVICE_NAME>-postgresql 5432:5432 &
-    PGPASSWORD="$POSTGRES_PASSWORD" psql --host 127.0.0.1 -U postgres -d postgres -p 5432 < <FILE_NAME.sql>
-```
+1. **Database.** Apply the storage, deployment and service manifests, then load
+   the seed scripts in `db/` in numeric order through a port-forward:
 
-### 2. Running the Analytics Application Locally
-In the `analytics/` directory:
+   ```bash
+   kubectl apply -f deployment/pv.yaml -f deployment/pvc.yaml \
+     -f deployment/postgresql-deployment.yaml -f deployment/postgresql-service.yaml
+   kubectl port-forward svc/postgresql-service 5433:5432 &
+   for f in db/*.sql; do psql -h 127.0.0.1 -p 5433 -U <DB_USER> -d <DB_NAME> < "$f"; done
+   ```
 
-1. Install dependencies
-```bash
-pip install -r requirements.txt
-```
-2. Run the application (see below regarding environment variables)
-```bash
-<ENV_VARS> python app.py
-```
+2. **Image.** Run the CodeBuild project. It publishes
+   `<account>.dkr.ecr.<region>.amazonaws.com/coworking-analytics:<build number>`.
 
-There are multiple ways to set environment variables in a command. They can be set per session by running `export KEY=VAL` in the command line or they can be prepended into your command.
+3. **Application.** Set that tag in `deployment/admin-api.yaml`, then apply the
+   configuration and the deployment:
 
-* `DB_USERNAME`
-* `DB_PASSWORD`
-* `DB_HOST` (defaults to `127.0.0.1`)
-* `DB_PORT` (defaults to `5432`)
-* `DB_NAME` (defaults to `postgres`)
+   ```bash
+   kubectl apply -f deployment/db-configmap.yaml -f deployment/db-secret.yaml \
+     -f deployment/admin-api.yaml
+   ```
 
-If we set the environment variables by prepending them, it would look like the following:
-```bash
-DB_USERNAME=username_here DB_PASSWORD=password_here python app.py
-```
-The benefit here is that it's explicitly set. However, note that the `DB_PASSWORD` value is now recorded in the session's history in plaintext. There are several ways to work around this including setting environment variables in a file and sourcing them in a terminal session.
+4. **Verify.**
 
-3. Verifying The Application
-* Generate report for check-ins grouped by dates
-`curl <BASE_URL>/api/reports/daily_usage`
+   ```bash
+   kubectl get pods                      # coworking should be 1/1 Running
+   kubectl get svc coworking             # note the EXTERNAL-IP
+   curl <EXTERNAL-IP>:5153/api/reports/daily_usage
+   ```
 
-* Generate report for check-ins grouped by users
-`curl <BASE_URL>/api/reports/user_visits`
+## Releasing a change
 
-## Project Instructions
-1. Set up a Postgres database with a Helm Chart
-2. Create a `Dockerfile` for the Python application. Use a base image that is Python-based.
-3. Write a simple build pipeline with AWS CodeBuild to build and push a Docker image into AWS ECR
-4. Create a service and deployment using Kubernetes configuration files to deploy the application
-5. Check AWS CloudWatch for application logs
+1. Commit the change and push it to `main`.
+2. Run the CodeBuild project (or let its webhook trigger it) and note the build
+   number of the successful build. That number is the new image tag.
+3. Update the `image:` tag in `deployment/admin-api.yaml` and apply it:
 
-### Deliverables
-1. `Dockerfile`
-2. Screenshot of AWS CodeBuild pipeline
-3. Screenshot of AWS ECR repository for the application's repository
-4. Screenshot of `kubectl get svc`
-5. Screenshot of `kubectl get pods`
-6. Screenshot of `kubectl describe svc <DATABASE_SERVICE_NAME>`
-7. Screenshot of `kubectl describe deployment <SERVICE_NAME>`
-8. All Kubernetes config files used for deployment (ie YAML files)
-9. Screenshot of AWS CloudWatch logs for the application
-10. `README.md` file in your solution that serves as documentation for your user to detail how your deployment process works and how the user can deploy changes. The details should not simply rehash what you have done on a step by step basis. Instead, it should help an experienced software developer understand the technologies and tools in the build and deploy process as well as provide them insight into how they would release new builds.
+   ```bash
+   kubectl apply -f deployment/admin-api.yaml
+   kubectl rollout status deployment/coworking
+   ```
 
+4. Commit the manifest so the repository always records what is running.
 
-### Stand Out Suggestions
-Please provide up to 3 sentences for each suggestion. Additional content in your submission from the standout suggestions do _not_ impact the length of your total submission.
-1. Specify reasonable Memory and CPU allocation in the Kubernetes deployment configuration
-2. In your README, specify what AWS instance type would be best used for the application? Why?
-3. In your README, provide your thoughts on how we can save on costs?
+Kubernetes performs a rolling update: the new pod must pass `/readiness_check`
+before the old one is removed, so a build that cannot reach the database never
+receives traffic. To roll back, run `kubectl rollout undo deployment/coworking`
+or re-apply the manifest with the previous tag.
 
-### Best Practices
-* Dockerfile uses an appropriate base image for the application being deployed. Complex commands in the Dockerfile include a comment describing what it is doing.
-* The Docker images use semantic versioning with three numbers separated by dots, e.g. `1.2.1` and  versioning is visible in the  screenshot. See [Semantic Versioning](https://semver.org/) for more details.
+Changes to the ConfigMap or Secret are not picked up by running pods. After
+applying them, restart the deployment with
+`kubectl rollout restart deployment/coworking`.
+
+## Logs and troubleshooting
+
+Application logs are in CloudWatch under the log group
+`/aws/containerinsights/<cluster-name>/application`, in the stream for the
+`coworking` pod. The same output is available directly with
+`kubectl logs deploy/coworking`. The app logs the daily-usage report every
+30 seconds, which makes it easy to confirm that it is healthy and connected.
+
+| Symptom | Likely cause |
+|---|---|
+| Pod `0/1`, `/readiness_check` returns 500 | App cannot query the database: check `DB_*` values against PostgreSQL |
+| `Connection refused` to `127.0.0.1:5432` | `DB_HOST` is not set, so the app fell back to localhost |
+| `ImagePullBackOff` | The tag in `admin-api.yaml` does not exist in ECR |
+
+## Sizing and cost
+
+- **Instance type.** The service is a single lightweight Flask process that
+  issues small SQL queries, so it is neither CPU- nor memory-intensive. A
+  burstable general-purpose instance such as `t3.small` or `t3.medium` is a
+  good fit: it leaves headroom for PostgreSQL and the CloudWatch agents while
+  staying inexpensive.
+- **Saving cost.** Keep the node group small and let it scale down when idle,
+  use Spot instances for the stateless API pods, and set CPU and memory
+  requests so pods pack tightly onto nodes. An ECR lifecycle policy that
+  expires old image tags and a short CloudWatch log retention period keep
+  storage charges from growing over time.
