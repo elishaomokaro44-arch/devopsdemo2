@@ -1,8 +1,8 @@
 apiVersion: v1
 kind: ConfigMap
 data:
-  DB_USERNAME: "admin"
-  DB_NAME: "postgres"
+  DB_USERNAME: "elisha0147"
+  DB_NAME: "elishaomokaro"
   DB_HOST: "postgresql-service"
   DB_PORT: "5432"
 metadata:
