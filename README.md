@@ -140,6 +140,11 @@ Application logs are in CloudWatch under the log group
 
 ## Sizing and cost
 
+- **Resource allocation.** The API container requests 100m CPU and 128Mi of
+  memory and is limited to 500m CPU and 256Mi (see `deployment/admin-api.yaml`).
+  The requests reflect what an idle Flask process with a database connection
+  actually needs, and the limits stop a runaway query or leak from starving
+  PostgreSQL on the same node.
 - **Instance type.** The service is a single lightweight Flask process that
   issues small SQL queries, so it is neither CPU- nor memory-intensive. A
   burstable general-purpose instance such as `t3.small` or `t3.medium` is a

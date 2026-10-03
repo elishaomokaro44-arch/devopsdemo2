@@ -32,6 +32,13 @@ spec:
         - name: coworking
           image: 725072160716.dkr.ecr.us-east-1.amazonaws.com/coworking-analytics:8
           imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
           livenessProbe:
             httpGet:
               path: /health_check
