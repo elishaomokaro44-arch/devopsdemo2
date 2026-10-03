@@ -21,8 +21,8 @@ def health_check():
 @app.route("/readiness_check")
 def readiness_check():
     try:
-        # Run a simple raw SQL query to confirm DB connectivity
-        db.session.execute("SELECT 1 FROM tokens LIMIT 1;")
+        # Simple query to confirm DB connectivity
+        db.session.execute(text("SELECT 1 FROM tokens LIMIT 1"))
     except Exception as e:
         app.logger.error(e)
         return "failed", 500
