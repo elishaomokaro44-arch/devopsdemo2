@@ -18,3 +18,7 @@ analytics/venv/
 .env
 *.env
 
+
+# Original phone photos (converted copies are in screenshots/)
+*.HEIC
+screenshots/originals/

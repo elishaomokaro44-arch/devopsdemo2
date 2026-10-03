@@ -23,7 +23,7 @@ GitHub ──► AWS CodeBuild ──► Amazon ECR ──► Amazon EKS ──�
 
 - **GitHub** holds the application code (`analytics/`), the build definition
   (`buildspec.yaml`), the database seed scripts (`db/`) and the Kubernetes
-  manifests (`deployment/`).
+  manifests (`deployments/`).
 - **AWS CodeBuild** builds the Docker image from `analytics/Dockerfile` and
   pushes it to ECR. Each image is tagged with the CodeBuild build number
   (`$CODEBUILD_BUILD_NUMBER`), so every build produces a new, immutable tag.
@@ -40,11 +40,11 @@ GitHub ──► AWS CodeBuild ──► Amazon ECR ──► Amazon EKS ──�
 | `analytics/` | Flask application, `requirements.txt` and `Dockerfile` |
 | `buildspec.yaml` | CodeBuild pipeline: log in to ECR, build, tag, push |
 | `db/` | SQL scripts that create and seed the `users` and `tokens` tables |
-| `deployment/pv.yaml`, `pvc.yaml` | Storage for PostgreSQL |
-| `deployment/postgresql-deployment.yaml`, `postgresql-service.yaml` | PostgreSQL and its in-cluster service |
-| `deployment/db-configmap.yaml` | Non-secret database settings (`db-env`) |
-| `deployment/db-secret.yaml` | Database credentials (`db-secret`) |
-| `deployment/admin-api.yaml` | Analytics API deployment and LoadBalancer service |
+| `deployments/pv.yaml`, `pvc.yaml` | Storage for PostgreSQL |
+| `deployments/postgresql-deployment.yaml`, `postgresql-service.yaml` | PostgreSQL and its in-cluster service |
+| `deployments/db-configmap.yaml` | Non-secret database settings (`db-env`) |
+| `deployments/db-secret.yaml` | Database credentials (`db-secret`) |
+| `deployments/admin-api.yaml` | Analytics API deployment and LoadBalancer service |
 
 ## Configuration
 
@@ -76,8 +76,8 @@ run Docker) with a service role that is allowed to push to ECR.
    the seed scripts in `db/` in numeric order through a port-forward:
 
    ```bash
-   kubectl apply -f deployment/pv.yaml -f deployment/pvc.yaml \
-     -f deployment/postgresql-deployment.yaml -f deployment/postgresql-service.yaml
+   kubectl apply -f deployments/pv.yaml -f deployments/pvc.yaml \
+     -f deployments/postgresql-deployment.yaml -f deployments/postgresql-service.yaml
    kubectl port-forward svc/postgresql-service 5433:5432 &
    for f in db/*.sql; do psql -h 127.0.0.1 -p 5433 -U <DB_USER> -d <DB_NAME> < "$f"; done
    ```
@@ -85,12 +85,12 @@ run Docker) with a service role that is allowed to push to ECR.
 2. **Image.** Run the CodeBuild project. It publishes
    `<account>.dkr.ecr.<region>.amazonaws.com/coworking-analytics:<build number>`.
 
-3. **Application.** Set that tag in `deployment/admin-api.yaml`, then apply the
+3. **Application.** Set that tag in `deployments/admin-api.yaml`, then apply the
    configuration and the deployment:
 
    ```bash
-   kubectl apply -f deployment/db-configmap.yaml -f deployment/db-secret.yaml \
-     -f deployment/admin-api.yaml
+   kubectl apply -f deployments/db-configmap.yaml -f deployments/db-secret.yaml \
+     -f deployments/admin-api.yaml
    ```
 
 4. **Verify.**
@@ -106,10 +106,10 @@ run Docker) with a service role that is allowed to push to ECR.
 1. Commit the change and push it to `main`.
 2. Run the CodeBuild project (or let its webhook trigger it) and note the build
    number of the successful build. That number is the new image tag.
-3. Update the `image:` tag in `deployment/admin-api.yaml` and apply it:
+3. Update the `image:` tag in `deployments/admin-api.yaml` and apply it:
 
    ```bash
-   kubectl apply -f deployment/admin-api.yaml
+   kubectl apply -f deployments/admin-api.yaml
    kubectl rollout status deployment/coworking
    ```
 
@@ -141,7 +141,7 @@ Application logs are in CloudWatch under the log group
 ## Sizing and cost
 
 - **Resource allocation.** The API container requests 100m CPU and 128Mi of
-  memory and is limited to 500m CPU and 256Mi (see `deployment/admin-api.yaml`).
+  memory and is limited to 500m CPU and 256Mi (see `deployments/admin-api.yaml`).
   The requests reflect what an idle Flask process with a database connection
   actually needs, and the limits stop a runaway query or leak from starving
   PostgreSQL on the same node.
