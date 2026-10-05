@@ -18,9 +18,15 @@ spec:
         - name: POSTGRES_DB
           value: elishaomokaro
         - name: POSTGRES_USER
-          value: elisha0147
+          valueFrom:
+            secretKeyRef:
+              name: db-secret
+              key: DB_USERNAME
         - name: POSTGRES_PASSWORD
-          value: OMOKARO55555
+          valueFrom:
+            secretKeyRef:
+              name: db-secret
+              key: DB_PASSWORD
         ports:
         - containerPort: 5432
         volumeMounts:
