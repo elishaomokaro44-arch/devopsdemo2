@@ -20,6 +20,12 @@ metadata:
     service: coworking
 spec:
   replicas: 1
+  # The node is at its pod limit, so replace the pod instead of surging.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       service: coworking
@@ -30,7 +36,7 @@ spec:
     spec:
       containers:
         - name: coworking
-          image: 725072160716.dkr.ecr.us-east-1.amazonaws.com/coworking-analytics:8
+          image: 725072160716.dkr.ecr.us-east-1.amazonaws.com/coworking-analytics:13
           imagePullPolicy: IfNotPresent
           resources:
             requests:
