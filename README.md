@@ -132,6 +132,25 @@ Application logs are in CloudWatch under the log group
 `kubectl logs deploy/coworking`. The app logs the daily-usage report every
 30 seconds, which makes it easy to confirm that it is healthy and connected.
 
+A healthy pod produces three kinds of lines:
+
+- `"GET /health_check HTTP/1.1" 200` and `"GET /readiness_check HTTP/1.1" 200`
+  every 10 seconds, from the Kubernetes probes.
+- `INFO in app: get_daily_visits response: {...}` every 30 seconds.
+- `amazon.opentelemetry...endpoint_collector - INFO - Exported 2 endpoint metrics`
+  on `stderr`. This comes from the CloudWatch agent's auto-instrumentation, is
+  logged at INFO level and is not an error.
+
+To read the messages without the JSON wrapper, run this in CloudWatch Logs
+Insights against the application log group:
+
+```
+fields @timestamp, log
+| filter kubernetes.pod_name like /coworking/
+| sort @timestamp desc
+| limit 30
+```
+
 | Symptom | Likely cause |
 |---|---|
 | Pod `0/1`, `/readiness_check` returns 500 | App cannot query the database: check `DB_*` values against PostgreSQL |
